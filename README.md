@@ -80,6 +80,12 @@ PORT=3000 ./anything
   Requests are served one at a time; others wait. Closing a tab does not stop a
   page mid-generation — it is finished, unseen, and remembered.
 
+The prompt ranks what the page is built from: the path and query first, then
+the method and body, the `Referer`, cookies, and lightly `Accept-Language` and
+`User-Agent`. Purely technical headers (`Accept*` other than language,
+`Sec-*`, `Connection`, `Cache-Control`, `DNT`, `If-*`, …) are stripped before
+the model sees the request, so they can't steer it.
+
 Output is held back until the first `<`, so any stray preamble or code fence is
 dropped. Responses carry `Cache-Control: no-store`. `/favicon.ico` returns an
 empty 204 so browsers don't trigger a generation for it.
