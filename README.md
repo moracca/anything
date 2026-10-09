@@ -47,7 +47,10 @@ Download a binary for your platform from the
 ./anything -ollama qwen3.8:27b-mlx-bf16
 ```
 
-and open <http://127.0.0.1:8080/> — or any path. With Claude, the page starts
+and open <http://127.0.0.1:8080/> — or any path. With Ollama, browsers immediately
+show a loading message and elapsed time. It stays visible while the model writes the
+page's head and CSS, then the generated content streams into the same tab.
+With Claude, the page starts
 arriving within a few seconds and fills in as it is written; a full page takes
 about 15 seconds.
 
@@ -65,6 +68,8 @@ depends on the model and hardware.
 
 Leave the terminal running. It logs when generation starts, when HTML begins
 arriving, and progress every 10 seconds while a request is still running.
+Ollama's browser loading screen requires JavaScript; terminal clients still receive
+the raw HTML response.
 
 ## Flags
 

@@ -253,6 +253,16 @@ func skipReason(r *http.Request) string {
 var skipped sync.Map
 
 func serve(ctx context.Context, api apiBackend, w http.ResponseWriter, r *http.Request) {
+	internal := r.Header.Get(generationHeader) == "1"
+	if internal {
+		var err error
+		r, err = originalRequest(w, r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		r.Header.Del(generationHeader)
+	}
 	if why := skipReason(r); why != "" {
 		if _, seen := skipped.LoadOrStore(why+r.URL.Path, true); !seen {
 			log.Printf("skip %s %s  (%s; logged once)", r.Method, r.URL.Path, why)
@@ -262,6 +272,10 @@ func serve(ctx context.Context, api apiBackend, w http.ResponseWriter, r *http.R
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	if api.local && !internal && pageDests[r.Header.Get("Sec-Fetch-Dest")] {
+		loadingPage(w, r)
+		return
+	}
 	origin := requestOrigin(r) // read before the Sec-* headers are stripped
 	for h := range r.Header {
 		if isPlumbing(h) {
@@ -326,6 +340,9 @@ func serve(ctx context.Context, api apiBackend, w http.ResponseWriter, r *http.R
 	}()
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if internal {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+	}
 	w.Header().Set("Cache-Control", "no-store") // the back button gets a new page too
 	flusher, _ := w.(http.Flusher)
 
@@ -342,8 +359,12 @@ func serve(ctx context.Context, api apiBackend, w http.ResponseWriter, r *http.R
 			started = true
 			firstByte = time.Since(began)
 			log.Printf("  %s  HTML started after %s  from %s", r.URL.RequestURI(), seconds(firstByte), r.RemoteAddr)
-			n, _ := w.Write(pending.Bytes()[i:])
-			sent.Add(int64(n))
+			text = pending.String()[i:]
+		}
+		if internal {
+			if json.NewEncoder(w).Encode(map[string]string{"html": text}) == nil {
+				sent.Add(int64(len(text)))
+			}
 		} else {
 			n, _ := io.WriteString(w, text)
 			sent.Add(int64(n))
@@ -365,13 +386,19 @@ func serve(ctx context.Context, api apiBackend, w http.ResponseWriter, r *http.R
 		log.Printf("generation error: %v", err)
 		if !started {
 			http.Error(w, "the page could not be imagined: "+err.Error(), http.StatusBadGateway)
+		} else if internal {
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		}
 		return
 	}
 	if stats.StopReason == "refusal" && !started {
-		io.WriteString(w, "<!doctype html><title>…</title><p>This page declined to exist.</p>")
+		emit("<!doctype html><title>…</title><p>This page declined to exist.</p>")
 	} else if !started {
 		http.Error(w, "the page could not be imagined: the model returned no HTML", http.StatusBadGateway)
+		return
+	}
+	if internal {
+		json.NewEncoder(w).Encode(map[string]bool{"done": true})
 	}
 }
 
