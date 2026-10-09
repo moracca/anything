@@ -162,7 +162,7 @@ func TestOllamaChildIsolation(t *testing.T) {
 		env[key] = value
 	}
 	for key, want := range map[string]string{
-		"ANTHROPIC_API_KEY": "ollama", "ANTHROPIC_BASE_URL": config.baseURL,
+		"ANTHROPIC_AUTH_TOKEN": "ollama", "ANTHROPIC_BASE_URL": config.baseURL,
 		"CLAUDE_CODE_MAX_CONTEXT_TOKENS":           "65536",
 		"CLAUDE_CODE_GIT_BASH_PATH":                `C:\portable-git\bin\bash.exe`,
 		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "ANYTHING_TEST_SENTINEL": "preserved",
@@ -171,7 +171,9 @@ func TestOllamaChildIsolation(t *testing.T) {
 			t.Errorf("child %s = %q, want %q", key, env[key], want)
 		}
 	}
-	for _, key := range []string{"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_PROFILE", "CLAUDE_CODE_USE_BEDROCK",
+	// The child's ANTHROPIC_AUTH_TOKEN is the local placeholder (checked above),
+	// never the operator's; the operator's API key must not reach it at all.
+	for _, key := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_PROFILE", "CLAUDE_CODE_USE_BEDROCK",
 		"CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_OAUTH_TOKEN", "MAX_THINKING_TOKENS"} {
 		if env[key] != "" {
 			t.Errorf("child retained inherited %s", key)
@@ -209,5 +211,74 @@ func TestOllamaChildIsolationCaseInsensitive(t *testing.T) {
 	}
 	if env["CLAUDE_CODE_GIT_BASH_PATH"] != bashPath || env["CLAUDE_CODE_USE_BEDROCK"] != "" {
 		t.Errorf("case-insensitive environment handling lost Git Bash or retained the provider override")
+	}
+}
+
+func TestOMLXConfiguration(t *testing.T) {
+	var settings omlxSettings
+	settings.Server.Host, settings.Server.Port = "0.0.0.0", 8001
+	settings.Auth.APIKey = "settings-key"
+	settings.Sampling.MaxContextWindow = 32768
+
+	// Everything unset: oMLX's own settings fill it in.
+	c, err := newOMLXConfig("gpt-oss-120b-4bit", "", "", 0, settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.name != "oMLX" || c.baseURL != "http://127.0.0.1:8001" || c.apiKey != "settings-key" || c.contextTokens != 32768 {
+		t.Errorf("from settings: %+v", c)
+	}
+
+	// The environment and flags win over the settings file.
+	c, err = newOMLXConfig("gpt-oss-120b-4bit", "localhost:9000", "env-key", 16384, settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.baseURL != "http://localhost:9000" || c.apiKey != "env-key" || c.contextTokens != 16384 {
+		t.Errorf("overrides: %+v", c)
+	}
+
+	// No settings file: oMLX's defaults.
+	c, err = newOMLXConfig("gpt-oss-120b-4bit", "", "", 0, omlxSettings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.baseURL != "http://127.0.0.1:8000" || c.apiKey != "omlx" || c.contextTokens != 32768 {
+		t.Errorf("defaults: %+v", c)
+	}
+
+	if _, err := newOMLXConfig("m", "ftp://localhost", "", 0, settings); err == nil || !strings.Contains(err.Error(), "OMLX_HOST") {
+		t.Errorf("bad host error = %v, want one naming OMLX_HOST", err)
+	}
+}
+
+func TestOMLXKeyReachesServerAndSession(t *testing.T) {
+	gotKey := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select { // the SDK retries 5xx responses; keep only the first key
+		case gotKey <- r.Header.Get("X-Api-Key"):
+		default:
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInsufficientStorage)
+		io.WriteString(w, `{"error":{"message":"does not fit under the memory ceiling","type":"server_error"}}`)
+	}))
+	defer server.Close()
+	c, err := newOMLXConfig("m", server.URL, "secret-key", 0, omlxSettings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = generateAPI(context.Background(), c.apiBackend(), "raw request", func(string) {})
+	if err == nil || !strings.Contains(err.Error(), "memory ceiling") {
+		t.Errorf("oMLX error not surfaced: %v", err)
+	}
+	if k := <-gotKey; k != "secret-key" {
+		t.Errorf("API request sent key %q", k)
+	}
+
+	cmd := exec.Command("claude", cliArgs("system", c, "--input-format", "stream-json")...)
+	c.configure(cmd)
+	if !slices.Contains(cmd.Env, "ANTHROPIC_AUTH_TOKEN=secret-key") || !slices.Contains(cmd.Env, "ANTHROPIC_BASE_URL="+server.URL) {
+		t.Error("session child does not get the oMLX key and URL")
 	}
 }

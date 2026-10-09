@@ -14,15 +14,17 @@ var usageGroups = []struct {
 	flags [][2]string // flag name, value placeholder
 }{
 	{"Mode", [][2]string{{"session", ""}, {"recycle", "N"}}},
-	{"Backend", [][2]string{{"ollama", "MODEL"}, {"ollama-context", "N"}}},
+	{"Backend", [][2]string{{"ollama", "MODEL"}, {"omlx", "MODEL"}, {"local-context", "N"}, {"ollama-context", "N"}}},
 	{"Site", [][2]string{{"theme", "TEXT"}}},
 	{"Seeds", [][2]string{{"seeds", "a,b,c"}, {"seed-file", "PATH"}, {"seed-mix", "a,b"}, {"no-seeds", ""}}},
 }
 
 var usageEnv = [][2]string{
 	{"PORT", "port to listen on, on 127.0.0.1 (default 8080)"},
-	{"ANTHROPIC_API_KEY", "if set (and -session and -ollama are off), generate pages through the Anthropic API instead of the claude CLI"},
+	{"ANTHROPIC_API_KEY", "if set (and -session, -ollama and -omlx are off), generate pages through the Anthropic API instead of the claude CLI"},
 	{"OLLAMA_HOST", "Ollama API base URL, as host:port or http(s)://host:port (default http://127.0.0.1:11434)"},
+	{"OMLX_HOST", "oMLX API base URL (default: from ~/.omlx/settings.json, else http://127.0.0.1:8000)"},
+	{"OMLX_API_KEY", "oMLX API key (default: from ~/.omlx/settings.json)"},
 }
 
 const (

@@ -86,7 +86,7 @@ func TestLocalSessionThemeChange(t *testing.T) {
 	setTheme("deep sea research station")
 	input := &testSessionInput{}
 	s := &session{
-		ollama: &ollamaConfig{model: "local"}, theme: "old theme",
+		local: &localConfig{model: "local"}, theme: "old theme",
 		cmd: &exec.Cmd{}, stdin: input,
 		out: bufio.NewScanner(strings.NewReader(`{"type":"result","usage":{"output_tokens":2}}`)),
 	}

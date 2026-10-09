@@ -32,8 +32,12 @@ One of:
   or Claude Code. Combining it with `-session` also requires `claude` on your
   `PATH`, using Ollama through Claude Code's local API configuration; no Claude
   login is needed.
+- **[oMLX](https://github.com/jundot/omlx)** running locally (Apple Silicon).
+  Use `-omlx MODEL`. The host, port and API key are read from oMLX's own
+  `~/.omlx/settings.json`, so a working oMLX needs no extra setup;
+  `OMLX_HOST` and `OMLX_API_KEY` override them.
 
-`-ollama MODEL` takes precedence over `ANTHROPIC_API_KEY`. Otherwise, if
+`-ollama MODEL` or `-omlx MODEL` takes precedence over `ANTHROPIC_API_KEY`. Otherwise, if
 `ANTHROPIC_API_KEY` is set, the API is used; otherwise the `claude` CLI.
 
 ## Run
@@ -65,6 +69,8 @@ For Ollama, start the app or `ollama serve`, then install a model with
 example above needs substantial memory; `qwen3-coder` is another option.
 The server uses exactly the model name you supply. Local generation speed
 depends on the model and hardware.
+On a Mac, turn off Low Power Mode: it throttles the GPU, and a page that takes
+20–30 seconds can take several minutes with it on.
 
 Leave the terminal running. With Ollama, it also logs when generation starts,
 when HTML begins arriving, and progress every 10 seconds while a request is
@@ -77,7 +83,9 @@ the raw HTML response.
 | Flag | Default | Description |
 |---|---|---|
 | `-ollama MODEL` | unset | Use this installed local Ollama model. With `-session`, Claude Code runs against Ollama in `--bare` mode. |
-| `-ollama-context N` | `65536` | With `-ollama` and `-session`: context budget used by Claude Code. Keep it within the model/server's supported window; this does not configure the Ollama runner. |
+| `-omlx MODEL` | unset | Use this oMLX model (Apple Silicon). Model names are the folder names oMLX lists at `/v1/models`. With `-session`, Claude Code runs against oMLX in `--bare` mode. |
+| `-local-context N` | auto | With `-ollama` or `-omlx` and `-session`: the context budget Claude Code assumes. Defaults to 65536 for Ollama, and to oMLX's own `max_context_window` (else 32768) for oMLX. Keep it within what the server allows. |
+| `-ollama-context N` | | Old name for `-local-context`. |
 | `-session` | off | Keep one long-running `claude` session instead of a fresh one per request. The model remembers every page it has served, to every visitor: each refresh is still new, but pages can refer to ones that no longer exist and notice returning visitors. Always uses the `claude` CLI, even if `ANTHROPIC_API_KEY` is set. |
 | `-recycle N` | `0` | With `-session`: restart the session after `N` pages, wiping the site's memory. `0` means never. |
 | `-theme "…"` | none | A theme for the whole site, e.g. `"deep sea research station, 1970s"`. Every page belongs to that world; the path and seed word bend it. |
@@ -91,6 +99,8 @@ the raw HTML response.
 | `PORT` | `8080` | Port to listen on. The server always binds to `127.0.0.1`. |
 | `ANTHROPIC_API_KEY` | unset | If set (and `-session` and `-ollama` are off), generate pages through the Anthropic API instead of the `claude` CLI. |
 | `OLLAMA_HOST` | `http://127.0.0.1:11434` | Ollama API base URL, as `host:port` or `http(s)://host:port`. |
+| `OMLX_HOST` | from `~/.omlx/settings.json`, else `http://127.0.0.1:8000` | oMLX API base URL. |
+| `OMLX_API_KEY` | from `~/.omlx/settings.json` | oMLX API key. It is sent only to the oMLX host. |
 
 `-ollama-context` sets Claude Code's
 [`CLAUDE_CODE_MAX_CONTEXT_TOKENS`](https://code.claude.com/docs/en/model-config#correct-the-window-for-a-gateway-or-custom-model-id).
@@ -110,6 +120,7 @@ PORT=3000 ./anything
 ./anything -seed-mix "neon,rain" -theme "deep sea research station, 1970s"
 ./anything -no-seeds
 ./anything -ollama qwen3.8:27b-mlx-bf16 -session -recycle 20
+./anything -omlx gpt-oss-120b-4bit
 ```
 
 ### Commands while it's running
@@ -234,8 +245,9 @@ system prompt tells the model this context belongs to whoever runs the server,
 not the visitor, and must never shape a page, which has held up in testing. But
 it's an instruction, not a guarantee. (`--bare` would remove the context, but
 it requires an API key; with an API key this server calls the API directly
-anyway, where nothing extra is attached.) Ollama sessions use `--bare` with a
-local placeholder API key; ordinary Ollama requests use the API directly.
+anyway, where nothing extra is attached.) Local sessions (Ollama, oMLX) use `--bare`, which
+attaches none of it, with the local server's key (or a placeholder) as a bearer
+token; ordinary local requests call the server's API directly.
 
 These are set in `cliArgs()` in `main.go`. If you loosen them, remember that
 whoever can reach the port writes the prompt: any tool you grant can be steered

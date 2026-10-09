@@ -90,7 +90,9 @@ func main() {
 	noSeeds := flag.Bool("no-seeds", false, "don't offer the model a seed word; pages come from the request alone")
 	flag.StringVar(&theme, "theme", "", `a theme for the whole site, e.g. "deep sea research station, 1970s"`)
 	ollamaModel := flag.String("ollama", "", "generate with this installed Ollama model instead of Claude")
-	ollamaContext := flag.Int("ollama-context", 65536, "with -ollama -session: context budget assumed by the claude CLI (tokens)")
+	omlxModel := flag.String("omlx", "", "generate with this oMLX model instead of Claude (Apple Silicon); host and key come from ~/.omlx/settings.json unless OMLX_HOST/OMLX_API_KEY are set")
+	localContext := flag.Int("local-context", 0, "with -ollama or -omlx and -session: context budget the claude CLI assumes, in tokens (default: 65536 for Ollama; oMLX's own max_context_window, else 32768)")
+	ollamaContext := flag.Int("ollama-context", 0, "old name for -local-context")
 	flag.Usage = func() { printUsage(flag.CommandLine.Output()) }
 	flag.Parse()
 
@@ -132,14 +134,28 @@ func main() {
 	// `claude -p`, which runs on your Claude Code login (subscription).
 	var backend string
 	api := apiBackend{model: model}
-	var ollama *ollamaConfig
-	if *ollamaModel != "" {
-		var err error
-		ollama, err = newOllamaConfig(*ollamaModel, os.Getenv("OLLAMA_HOST"), *ollamaContext)
-		if err != nil {
-			log.Fatal(err)
+	if *localContext == 0 {
+		*localContext = *ollamaContext
+	}
+	var local *localConfig
+	var err error
+	switch {
+	case *ollamaModel != "" && *omlxModel != "":
+		log.Fatal("-ollama and -omlx can't be used together")
+	case *ollamaModel != "":
+		ctxTokens := *localContext
+		if ctxTokens == 0 {
+			ctxTokens = defaultOllamaContext
 		}
-		api = ollama.apiBackend()
+		local, err = newOllamaConfig(*ollamaModel, os.Getenv("OLLAMA_HOST"), ctxTokens)
+	case *omlxModel != "":
+		local, err = newOMLXConfig(*omlxModel, os.Getenv("OMLX_HOST"), os.Getenv("OMLX_API_KEY"), *localContext, readOMLXSettings())
+	}
+	if err != nil {
+		log.Fatal(err)
+	}
+	if local != nil {
+		api = local.apiBackend()
 	} else {
 		api.client = anthropic.NewClient()
 	}
@@ -148,18 +164,18 @@ func main() {
 		if _, err := exec.LookPath("claude"); err != nil {
 			log.Fatal("-session needs the `claude` CLI on PATH")
 		}
-		sess = &session{recycleAfter: *recycle, ollama: ollama}
+		sess = &session{recycleAfter: *recycle, local: local}
 		backend = "claude session (remembers every page)"
-		if ollama != nil {
-			backend = "Ollama session (" + ollama.model + "; via claude CLI)"
+		if local != nil {
+			backend = local.name + " session (" + local.model + " at " + local.baseURL + "; via claude CLI)"
 		}
 		if *recycle > 0 {
 			backend += fmt.Sprintf(", forgets after %d", *recycle)
 		}
 	} else if useAPI {
 		backend = "Anthropic API (" + model + ")"
-		if api.local {
-			backend = "Ollama (" + ollama.model + ")"
+		if local != nil {
+			backend = local.name + " (" + local.model + " at " + local.baseURL + ")"
 		}
 	} else {
 		if _, err := exec.LookPath("claude"); err != nil {
@@ -537,10 +553,10 @@ func (l *cliLine) apply(s *genStats, emit func(string)) bool {
 
 // cliArgs runs claude headless with no tools, MCP servers or settings, so
 // all it can do is write the page.
-func cliArgs(system string, ollama *ollamaConfig, extra ...string) []string {
+func cliArgs(system string, local *localConfig, extra ...string) []string {
 	cliModel := "opus"
-	if ollama != nil {
-		cliModel = ollama.model
+	if local != nil {
+		cliModel = local.model
 		extra = append(extra, "--bare")
 	}
 	return append([]string{"-p",
