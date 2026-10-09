@@ -1,5 +1,5 @@
 // anything: a web server with no content. Every request is handed, raw, to
-// Claude, which invents the page on the spot. Nothing is cached; refresh and
+// a model, which invents the page on the spot. Nothing is cached; refresh and
 // the page is gone and something else is there.
 package main
 
@@ -74,14 +74,23 @@ func sitePrompt(session bool) string {
 	return p
 }
 
+type apiBackend struct {
+	client anthropic.Client
+	model  anthropic.Model
+	local  bool
+}
+
+
 func main() {
-	sessionMode := flag.Bool("session", false, "keep one long-running claude session that remembers every page it has served (uses your Claude Code login)")
+	sessionMode := flag.Bool("session", false, "keep one long-running claude session that remembers every page it has served")
 	recycle := flag.Int("recycle", 0, "with -session: restart the session (wiping its memory) after this many pages; 0 = never")
 	seedList := flag.String("seeds", "", "comma-separated seed words; one is picked at random for each request (default: a built-in list)")
 	seedFile := flag.String("seed-file", "", "pick seed words from any text file (a word list, a novel, lyrics...): every distinct word of 4+ letters")
 	seedMix := flag.String("seed-mix", "", "comma-separated words; each request pairs one of these with a random word from the pool")
 	noSeeds := flag.Bool("no-seeds", false, "don't offer the model a seed word; pages come from the request alone")
 	flag.StringVar(&theme, "theme", "", `a theme for the whole site, e.g. "deep sea research station, 1970s"`)
+	ollamaModel := flag.String("ollama", "", "generate with this installed Ollama model instead of Claude")
+	ollamaContext := flag.Int("ollama-context", 65536, "with -ollama -session: context budget assumed by the claude CLI (tokens)")
 	flag.Parse()
 
 	switch {
@@ -121,19 +130,36 @@ func main() {
 	// With an API key, call the API directly. Without one, shell out to
 	// `claude -p`, which runs on your Claude Code login (subscription).
 	var backend string
-	useAPI = os.Getenv("ANTHROPIC_API_KEY") != "" && !*sessionMode
-	client := anthropic.NewClient()
+	api := apiBackend{model: model}
+	var ollama *ollamaConfig
+	if *ollamaModel != "" {
+		var err error
+		ollama, err = newOllamaConfig(*ollamaModel, os.Getenv("OLLAMA_HOST"), *ollamaContext)
+		if err != nil {
+			log.Fatal(err)
+		}
+		api = ollama.apiBackend()
+	} else {
+		api.client = anthropic.NewClient()
+	}
+	useAPI = (api.local || os.Getenv("ANTHROPIC_API_KEY") != "") && !*sessionMode
 	if *sessionMode {
 		if _, err := exec.LookPath("claude"); err != nil {
 			log.Fatal("-session needs the `claude` CLI on PATH")
 		}
-		sess = &session{recycleAfter: *recycle}
+		sess = &session{recycleAfter: *recycle, ollama: ollama}
 		backend = "claude session (remembers every page)"
+		if ollama != nil {
+			backend = "Ollama session (" + ollama.model + "; via claude CLI)"
+		}
 		if *recycle > 0 {
 			backend += fmt.Sprintf(", forgets after %d", *recycle)
 		}
 	} else if useAPI {
 		backend = "Anthropic API (" + model + ")"
+		if api.local {
+			backend = "Ollama (" + ollama.model + ")"
+		}
 	} else {
 		if _, err := exec.LookPath("claude"); err != nil {
 			log.Fatal("no ANTHROPIC_API_KEY and no `claude` CLI on PATH")
@@ -142,7 +168,7 @@ func main() {
 	}
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		serve(r.Context(), client, w, r)
+		serve(r.Context(), api, w, r)
 	})
 
 	addr := "127.0.0.1:" + port
@@ -225,7 +251,7 @@ func skipReason(r *http.Request) string {
 // skipped remembers what has been skipped, so each is logged once.
 var skipped sync.Map
 
-func serve(ctx context.Context, client anthropic.Client, w http.ResponseWriter, r *http.Request) {
+func serve(ctx context.Context, api apiBackend, w http.ResponseWriter, r *http.Request) {
 	if why := skipReason(r); why != "" {
 		if _, seen := skipped.LoadOrStore(why+r.URL.Path, true); !seen {
 			log.Printf("skip %s %s  (%s; logged once)", r.Method, r.URL.Path, why)
@@ -307,7 +333,7 @@ func serve(ctx context.Context, client anthropic.Client, w http.ResponseWriter, 
 	if sess != nil {
 		stats, err = sess.generate(prompt, emit)
 	} else if useAPI {
-		stats, err = generateAPI(ctx, client, prompt, emit)
+		stats, err = generateAPI(ctx, api, prompt, emit)
 	} else {
 		stats, err = generateCLI(ctx, prompt, emit)
 	}
@@ -321,28 +347,41 @@ func serve(ctx context.Context, client anthropic.Client, w http.ResponseWriter, 
 	}
 	if stats.StopReason == "refusal" && !started {
 		io.WriteString(w, "<!doctype html><title>…</title><p>This page declined to exist.</p>")
+	} else if !started {
+		http.Error(w, "the page could not be imagined: the model returned no HTML", http.StatusBadGateway)
 	}
 }
 
-func generateAPI(ctx context.Context, client anthropic.Client, prompt string, emit func(string)) (genStats, error) {
+func generateAPI(ctx context.Context, api apiBackend, prompt string, emit func(string)) (genStats, error) {
 	began := time.Now()
-	stream := client.Messages.NewStreaming(ctx, anthropic.MessageNewParams{
-		Model:     model,
+	params := anthropic.MessageNewParams{
+		Model:     api.model,
 		MaxTokens: 32000,
 		System:    []anthropic.TextBlockParam{{Text: sitePrompt(false)}},
 		Messages: []anthropic.MessageParam{
 			anthropic.NewUserMessage(anthropic.NewTextBlock(prompt)),
 		},
-		OutputConfig: anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffortLow},
-	},
+	}
+	var opts []option.RequestOption
+	if api.local {
+		opts = append(opts, option.WithJSONSet("thinking", map[string]string{"type": "disabled"}))
+	} else {
+		params.OutputConfig = anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffortLow}
 		// Route safety-classifier refusals to a fallback model instead of failing.
-		option.WithHeaderAdd("anthropic-beta", "server-side-fallback-2026-07-01"),
-		option.WithJSONSet("fallbacks", "default"),
-	)
+		opts = append(opts, option.WithHeaderAdd("anthropic-beta", "server-side-fallback-2026-07-01"),
+			option.WithJSONSet("fallbacks", "default"))
+	}
+	stream := api.client.Messages.NewStreaming(ctx, params, opts...)
+	defer stream.Close()
 	var msg anthropic.Message
+	var accumulateErr error
+	complete := false
 	for stream.Next() {
 		ev := stream.Current()
-		msg.Accumulate(ev)
+		if accumulateErr = msg.Accumulate(ev); accumulateErr != nil {
+			break
+		}
+		complete = complete || ev.Type == "message_stop"
 		if d, ok := ev.AsAny().(anthropic.ContentBlockDeltaEvent); ok {
 			if td, ok := d.Delta.AsAny().(anthropic.TextDelta); ok {
 				emit(td.Text)
@@ -357,10 +396,22 @@ func generateAPI(ctx context.Context, client anthropic.Client, prompt string, em
 		CacheWrite:   msg.Usage.CacheCreationInputTokens,
 		OutputTokens: msg.Usage.OutputTokens,
 		APITime:      time.Since(began),
-		Billed:       true,
+		CostUSD:      -1,
+		Billed:       !api.local,
 	}
-	s.CostUSD = apiCost(s)
-	return s, stream.Err()
+	if !api.local {
+		s.CostUSD = apiCost(s)
+	}
+	if accumulateErr != nil {
+		return s, accumulateErr
+	}
+	if err := stream.Err(); err != nil {
+		return s, err
+	}
+	if !complete {
+		return s, fmt.Errorf("model stream ended before message_stop")
+	}
+	return s, nil
 }
 
 // cliLine is the subset of `claude -p --output-format stream-json` we read.
@@ -421,10 +472,15 @@ func (l *cliLine) apply(s *genStats, emit func(string)) bool {
 
 // cliArgs runs claude headless with no tools, MCP servers or settings, so
 // all it can do is write the page.
-func cliArgs(system string, extra ...string) []string {
+func cliArgs(system string, ollama *ollamaConfig, extra ...string) []string {
+	cliModel := "opus"
+	if ollama != nil {
+		cliModel = ollama.model
+		extra = append(extra, "--bare")
+	}
 	return append([]string{"-p",
 		"--output-format", "stream-json", "--include-partial-messages", "--verbose",
-		"--model", "opus", "--effort", "low",
+		"--model", cliModel, "--effort", "low",
 		"--system-prompt", system,
 		"--tools", "", "--strict-mcp-config", "--setting-sources", "",
 		"--no-session-persistence",
@@ -433,7 +489,7 @@ func cliArgs(system string, extra ...string) []string {
 
 func generateCLI(ctx context.Context, prompt string, emit func(string)) (genStats, error) {
 	stats := genStats{CostUSD: -1}
-	cmd := exec.CommandContext(ctx, "claude", cliArgs(sitePrompt(false))...)
+	cmd := exec.CommandContext(ctx, "claude", cliArgs(sitePrompt(false), nil)...)
 	cmd.Dir = os.TempDir() // keep it away from any project's CLAUDE.md
 	cmd.Stdin = strings.NewReader(prompt)
 	var stderr bytes.Buffer

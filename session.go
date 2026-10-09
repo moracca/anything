@@ -18,6 +18,7 @@ import (
 // has served. Turns are strictly one at a time; concurrent requests queue on mu.
 type session struct {
 	recycleAfter int
+	ollama       *ollamaConfig
 
 	mu    sync.Mutex
 	cmd   *exec.Cmd
@@ -36,7 +37,10 @@ type session struct {
 
 func (s *session) start() error {
 	s.theme = currentTheme()
-	cmd := exec.Command("claude", cliArgs(sitePrompt(true), "--input-format", "stream-json")...)
+	cmd := exec.Command("claude", cliArgs(sitePrompt(true), s.ollama, "--input-format", "stream-json")...)
+	if s.ollama != nil {
+		s.ollama.configure(cmd)
+	}
 	cmd.Dir = os.TempDir()
 	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()
@@ -112,6 +116,9 @@ func (s *session) generate(prompt string, emit func(string)) (genStats, error) {
 		if json.Unmarshal(s.out.Bytes(), &l) != nil {
 			continue
 		}
+		if s.ollama != nil && l.Type == "rate_limit_event" {
+			continue
+		}
 		if l.apply(&stats, emit) {
 			s.pages.Add(1)
 			stats.CostUSD -= s.costSoFar
@@ -121,6 +128,9 @@ func (s *session) generate(prompt string, emit func(string)) (genStats, error) {
 				stats.Plan = s.lastPlan
 			}
 			s.lastPlan = stats.Plan
+			if s.ollama != nil {
+				stats.CostUSD = -1 // CLI prices do not describe local inference.
+			}
 			if l.IsError {
 				return stats, fmt.Errorf("session: %s", l.Result)
 			}
