@@ -40,8 +40,8 @@ Download a binary for your platform from the
 ./anything -session        # the site remembers every page it has served
 ```
 
-and open <http://127.0.0.1:8080/> — or any path. The first bytes take roughly
-15–25 seconds to arrive; the page then fills in as it is written.
+and open <http://127.0.0.1:8080/> — or any path. The page starts arriving within a
+few seconds and fills in as it is written; a full page takes about 15.
 
 **macOS:** binaries downloaded through a browser are quarantined because they
 aren't signed. Clear it once with
@@ -87,8 +87,50 @@ the method and body, the `Referer`, cookies, and lightly `Accept-Language` and
 the model sees the request, so they can't steer it.
 
 Output is held back until the first `<`, so any stray preamble or code fence is
-dropped. Responses carry `Cache-Control: no-store`. `/favicon.ico` returns an
-empty 204 so browsers don't trigger a generation for it.
+dropped. Responses carry `Cache-Control: no-store`.
+
+
+## The log
+
+Each request gets two lines: what came in, and how the page went.
+
+```
+GET /observatory  [seed: casino]  [mode=navigate user-initiated]  from 127.0.0.1:61267
+  done /observatory  2.6kB  first byte 2.5s  total 16.3s  · opus-5-5 · context 1.3k (624 cached)  out 1.2k · 79 tok/s · ≈$0.029 at API rates · plan 5h 1% · 7d 8%
+```
+
+- **The bracket after the seed** says how the browser came to ask: a click
+  (`user-initiated`), a `referer`, a prefetch (`purpose=…`). A request with no
+  browser fetch metadata at all prints every header instead, so a script or
+  extension hitting the port can be identified.
+- **first byte / total:** time until the page starts arriving, and until it's
+  done. In `-session` mode this includes waiting behind another page.
+- **context:** everything the model read for this page. In `-session` mode it
+  grows with each page — it's the size of the site's memory.
+- **cost:** with an API key, `$0.029` is what the page was billed. On the
+  `claude` CLI it reads `≈$0.029 at API rates`: what the tokens would cost on
+  the API, not a charge — a subscription is metered by usage limits instead.
+- **plan** (CLI only): how much of your subscription's 5-hour and 7-day usage
+  windows is used. A `⚠` line is logged when a window passes 80% or a limit is
+  hit.
+- `(visitor left before it finished)` means nobody saw the whole page.
+
+### Requests that never get a page
+
+Browsers, dev tools and extensions make plenty of requests nobody will ever
+look at. Each would cost a full generation, so these get an instant empty 404
+instead (each path is logged once, as `skip …`):
+
+- `/.well-known/…` probes — e.g. Chrome DevTools asking for
+  `/.well-known/appspecific/com.chrome.devtools.json` whenever it's open
+- `/favicon.ico` and `/apple-touch-icon…`
+- anything a browser marks as not being a page load (`Sec-Fetch-Dest` other
+  than `document`/`iframe`): images, scripts, styles, fonts, and background
+  `fetch()` calls — including ones from scripts on generated pages
+- WebSocket upgrades. Some extensions (Postman Interceptor, for one) poll
+  localhost ports for one every 30 seconds.
+
+Clients that don't send `Sec-Fetch-Dest` at all, like `curl`, always get a page.
 
 ## What the model can access
 
@@ -98,6 +140,17 @@ Nothing but the request. The `claude` CLI is started with:
 - `--strict-mcp-config` and no MCP config — none of your MCP servers
 - `--setting-sources ""` — no user or project settings or CLAUDE.md
 - a temporary directory as its working directory — no project
+
+One thing can't be switched off this way: Claude Code automatically attaches
+some context about the logged-in user to every conversation — **your account
+email address** — plus environment notes (working directory, OS, today's
+date). Left alone, the model will happily use it: a homepage once came back as
+a dashboard for the operator's employer's product, logged in as them. The
+system prompt tells the model this context belongs to whoever runs the server,
+not the visitor, and must never shape a page, which has held up in testing. But
+it's an instruction, not a guarantee. (`--bare` would remove the context, but
+it requires an API key; with an API key this server calls the API directly
+anyway, where nothing extra is attached.)
 
 These are set in `cliArgs()` in `main.go`. If you loosen them, remember that
 whoever can reach the port writes the prompt: any tool you grant can be steered

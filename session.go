@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"time"
 )
 
 // session is one long-running `claude -p --input-format stream-json` process.
@@ -22,6 +23,13 @@ type session struct {
 	stdin io.WriteCloser
 	out   *bufio.Scanner
 	pages int
+
+	// The CLI reports cost and API time as running totals for the session;
+	// these hold the previous totals so each page can be logged on its own.
+	costSoFar float64
+	apiSoFar  time.Duration
+	// The CLI reports subscription usage only when it changes; keep the last report.
+	lastPlan string
 }
 
 func (s *session) start() error {
@@ -42,6 +50,7 @@ func (s *session) start() error {
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, 0, 1<<20), 16<<20)
 	s.cmd, s.stdin, s.out, s.pages = cmd, stdin, sc, 0
+	s.costSoFar, s.apiSoFar = 0, 0
 	log.Printf("session: started claude (pid %d); the site's memory begins now", cmd.Process.Pid)
 	return nil
 }
@@ -58,7 +67,8 @@ func (s *session) stop() {
 
 // generate runs one turn. It can't be cancelled midway: if the visitor leaves,
 // the page is still written (to nobody) and stays in the session's memory.
-func (s *session) generate(prompt string, emit func(string)) (string, error) {
+func (s *session) generate(prompt string, emit func(string)) (genStats, error) {
+	stats := genStats{CostUSD: -1}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -68,7 +78,7 @@ func (s *session) generate(prompt string, emit func(string)) (string, error) {
 	}
 	if s.cmd == nil {
 		if err := s.start(); err != nil {
-			return "", err
+			return stats, err
 		}
 	}
 
@@ -78,30 +88,31 @@ func (s *session) generate(prompt string, emit func(string)) (string, error) {
 	})
 	if _, err := s.stdin.Write(append(msg, '\n')); err != nil {
 		s.stop()
-		return "", fmt.Errorf("session: write: %w", err)
+		return stats, fmt.Errorf("session: write: %w", err)
 	}
 
-	var stopReason string
 	for s.out.Scan() {
 		var l cliLine
 		if json.Unmarshal(s.out.Bytes(), &l) != nil {
 			continue
 		}
-		switch {
-		case l.Type == "stream_event" && l.Event.Type == "content_block_delta" && l.Event.Delta.Type == "text_delta":
-			emit(l.Event.Delta.Text)
-		case l.Type == "stream_event" && l.Event.Type == "message_delta":
-			stopReason = l.Event.Delta.StopReason
-		case l.Type == "result":
+		if l.apply(&stats, emit) {
 			s.pages++
-			if l.IsError {
-				return stopReason, fmt.Errorf("session: %s", l.Result)
+			stats.CostUSD -= s.costSoFar
+			stats.APITime -= s.apiSoFar
+			s.costSoFar, s.apiSoFar = l.TotalCostUSD, time.Duration(l.DurationAPIMs)*time.Millisecond
+			if stats.Plan == "" {
+				stats.Plan = s.lastPlan
 			}
-			return stopReason, nil
+			s.lastPlan = stats.Plan
+			if l.IsError {
+				return stats, fmt.Errorf("session: %s", l.Result)
+			}
+			return stats, nil
 		}
 	}
 	// stdout closed before the turn finished: the process died. Restart next time.
 	err := s.out.Err()
 	s.stop()
-	return stopReason, fmt.Errorf("session: claude exited mid-turn (%v); memory lost, will restart", err)
+	return stats, fmt.Errorf("session: claude exited mid-turn (%v); memory lost, will restart", err)
 }
