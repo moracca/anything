@@ -63,6 +63,9 @@ example above needs substantial memory; `qwen3-coder` is another option.
 The server uses exactly the model name you supply. Local generation speed
 depends on the model and hardware.
 
+Leave the terminal running. It logs when generation starts, when HTML begins
+arriving, and progress every 10 seconds while a request is still running.
+
 ## Flags
 
 | Flag | Default | Description |

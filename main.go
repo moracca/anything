@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -282,14 +283,35 @@ func serve(ctx context.Context, api apiBackend, w http.ResponseWriter, r *http.R
 		prompt = "Note from whoever runs this server, for this page only: " + note + "\n\n" + prompt
 		say(fmt.Sprintf("note delivered with %s %s", r.Method, r.URL.RequestURI()))
 	}
-	log.Printf("%s %s%s  %s  from %s", r.Method, r.URL.RequestURI(), seedNote, origin, r.RemoteAddr)
-	began, sent := time.Now(), 0
+	log.Printf("%s %s%s  %s  from %s; generating HTML", r.Method, r.URL.RequestURI(), seedNote, origin, r.RemoteAddr)
+	began := time.Now()
+	var sent atomic.Int64
+	progressDone := make(chan struct{})
+	defer close(progressDone)
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-progressDone:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				stage := "waiting for HTML"
+				if sent.Load() > 0 {
+					stage = "streaming HTML"
+				}
+				log.Printf("  %s  %s  %s elapsed  %sB streamed  from %s", r.URL.RequestURI(), stage, seconds(time.Since(began)), kilo(sent.Load()), r.RemoteAddr)
+			}
+		}
+	}()
 	var firstByte time.Duration
 	var stats genStats
 	failed := false
 	defer func() {
 		totals.addPage(stats, firstByte, time.Since(began), ctx.Err() != nil, failed)
-		line := fmt.Sprintf("  done %s  %s", r.URL.RequestURI(), kilo(int64(sent))+"B")
+		line := fmt.Sprintf("  done %s  %s", r.URL.RequestURI(), kilo(sent.Load())+"B")
 		if firstByte > 0 {
 			line += "  first byte " + seconds(firstByte)
 		}
@@ -319,11 +341,12 @@ func serve(ctx context.Context, api apiBackend, w http.ResponseWriter, r *http.R
 			}
 			started = true
 			firstByte = time.Since(began)
+			log.Printf("  %s  HTML started after %s  from %s", r.URL.RequestURI(), seconds(firstByte), r.RemoteAddr)
 			n, _ := w.Write(pending.Bytes()[i:])
-			sent += n
+			sent.Add(int64(n))
 		} else {
 			n, _ := io.WriteString(w, text)
-			sent += n
+			sent.Add(int64(n))
 		}
 		if flusher != nil {
 			flusher.Flush()
