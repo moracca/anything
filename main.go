@@ -91,6 +91,7 @@ func main() {
 	flag.StringVar(&theme, "theme", "", `a theme for the whole site, e.g. "deep sea research station, 1970s"`)
 	ollamaModel := flag.String("ollama", "", "generate with this installed Ollama model instead of Claude")
 	ollamaContext := flag.Int("ollama-context", 65536, "with -ollama -session: context budget assumed by the claude CLI (tokens)")
+	flag.Usage = func() { printUsage(flag.CommandLine.Output()) }
 	flag.Parse()
 
 	switch {
