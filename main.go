@@ -81,7 +81,6 @@ type apiBackend struct {
 	local  bool
 }
 
-
 func main() {
 	sessionMode := flag.Bool("session", false, "keep one long-running claude session that remembers every page it has served")
 	recycle := flag.Int("recycle", 0, "with -session: restart the session (wiping its memory) after this many pages; 0 = never")
@@ -253,12 +252,18 @@ func skipReason(r *http.Request) string {
 var skipped sync.Map
 
 func serve(ctx context.Context, api apiBackend, w http.ResponseWriter, r *http.Request) {
-	internal := r.Header.Get(generationHeader) == "1"
+	internal := r.Header.Get(generationHeader) != ""
 	if internal {
+		if !api.local || r.Method != http.MethodPost {
+			totals.addSkip()
+			http.Error(w, "invalid generation request", http.StatusForbidden)
+			return
+		}
 		var err error
-		r, err = originalRequest(w, r)
+		r, err = originalRequest(r)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			totals.addSkip()
+			http.Error(w, err.Error(), http.StatusForbidden)
 			return
 		}
 		r.Header.Del(generationHeader)
@@ -297,29 +302,35 @@ func serve(ctx context.Context, api apiBackend, w http.ResponseWriter, r *http.R
 		prompt = "Note from whoever runs this server, for this page only: " + note + "\n\n" + prompt
 		say(fmt.Sprintf("note delivered with %s %s", r.Method, r.URL.RequestURI()))
 	}
-	log.Printf("%s %s%s  %s  from %s; generating HTML", r.Method, r.URL.RequestURI(), seedNote, origin, r.RemoteAddr)
+	progress := ""
+	if api.local {
+		progress = "; generating HTML"
+	}
+	log.Printf("%s %s%s  %s  from %s%s", r.Method, r.URL.RequestURI(), seedNote, origin, r.RemoteAddr, progress)
 	began := time.Now()
 	var sent atomic.Int64
-	progressDone := make(chan struct{})
-	defer close(progressDone)
-	go func() {
-		ticker := time.NewTicker(10 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-progressDone:
-				return
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				stage := "waiting for HTML"
-				if sent.Load() > 0 {
-					stage = "streaming HTML"
+	if api.local {
+		progressDone := make(chan struct{})
+		defer close(progressDone)
+		go func() {
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-progressDone:
+					return
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					stage := "waiting for HTML"
+					if sent.Load() > 0 {
+						stage = "streaming HTML"
+					}
+					log.Printf("  %s  %s  %s elapsed  %sB streamed  from %s", r.URL.RequestURI(), stage, seconds(time.Since(began)), kilo(sent.Load()), r.RemoteAddr)
 				}
-				log.Printf("  %s  %s  %s elapsed  %sB streamed  from %s", r.URL.RequestURI(), stage, seconds(time.Since(began)), kilo(sent.Load()), r.RemoteAddr)
 			}
-		}
-	}()
+		}()
+	}
 	var firstByte time.Duration
 	var stats genStats
 	failed := false
@@ -358,7 +369,9 @@ func serve(ctx context.Context, api apiBackend, w http.ResponseWriter, r *http.R
 			}
 			started = true
 			firstByte = time.Since(began)
-			log.Printf("  %s  HTML started after %s  from %s", r.URL.RequestURI(), seconds(firstByte), r.RemoteAddr)
+			if api.local {
+				log.Printf("  %s  HTML started after %s  from %s", r.URL.RequestURI(), seconds(firstByte), r.RemoteAddr)
+			}
 			text = pending.String()[i:]
 		}
 		if internal {
@@ -394,6 +407,7 @@ func serve(ctx context.Context, api apiBackend, w http.ResponseWriter, r *http.R
 	if stats.StopReason == "refusal" && !started {
 		emit("<!doctype html><title>…</title><p>This page declined to exist.</p>")
 	} else if !started {
+		failed = true
 		http.Error(w, "the page could not be imagined: the model returned no HTML", http.StatusBadGateway)
 		return
 	}

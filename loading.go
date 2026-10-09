@@ -2,20 +2,65 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httputil"
 	"strings"
+	"sync"
+	"time"
 )
 
 const generationHeader = "X-Anything-Generate"
+
+const generationTokenTTL = 5 * time.Minute
+const generationTokenLimit = 256
+
+type pendingPage struct {
+	raw     []byte
+	expires time.Time
+}
+
+var pendingPages = struct {
+	sync.Mutex
+	requests map[string]pendingPage
+}{requests: make(map[string]pendingPage)}
+
+// Called with pendingPages locked. Reclaim abandoned loaders before using the pool.
+func prunePendingPages(now time.Time) {
+	for token, page := range pendingPages.requests {
+		if !page.expires.After(now) {
+			delete(pendingPages.requests, token)
+		}
+	}
+}
+
+func storePendingPage(raw []byte) (string, error) {
+	var random [32]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", err
+	}
+	token := hex.EncodeToString(random[:])
+	pendingPages.Lock()
+	defer pendingPages.Unlock()
+	now := time.Now()
+	prunePendingPages(now)
+	if len(pendingPages.requests) >= generationTokenLimit {
+		return "", fmt.Errorf("too many pages are waiting to be generated; try again shortly")
+	}
+	pendingPages.requests[token] = pendingPage{raw: raw, expires: now.Add(generationTokenTTL)}
+	return token, nil
+}
 
 // A completed loading document can replace itself while reading a fetch stream.
 // Replay the original request so a form POST isn't turned into a GET or repeated.
 func loadingPage(w http.ResponseWriter, r *http.Request) {
 	snapshot := r.Clone(r.Context())
-	// Let fetch send credentials; never put them in an inline script.
+	// Fetch supplies current credentials; the saved navigation owns all other data.
 	snapshot.Header.Del("Cookie")
 	snapshot.Header.Del("Authorization")
 	raw, err := httputil.DumpRequest(snapshot, true)
@@ -23,15 +68,29 @@ func loadingPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	encoded, _ := json.Marshal(raw) // []byte becomes a safe base64 string.
+	token, err := storePendingPage(raw)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	encoded, _ := json.Marshal(token)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	io.WriteString(w, strings.Replace(loadingHTML, "REQUEST_DATA", string(encoded), 1))
+	io.WriteString(w, strings.Replace(loadingHTML, "GENERATION_TOKEN", string(encoded), 1))
 }
 
-func originalRequest(w http.ResponseWriter, r *http.Request) (*http.Request, error) {
-	// The envelope includes headers as well as the separately bounded form body.
-	original, err := http.ReadRequest(bufio.NewReader(http.MaxBytesReader(w, r.Body, 2<<20)))
+func originalRequest(r *http.Request) (*http.Request, error) {
+	// Only a single consumer may claim the saved request. The client body is ignored.
+	pendingPages.Lock()
+	prunePendingPages(time.Now())
+	token := r.Header.Get(generationHeader)
+	page, found := pendingPages.requests[token]
+	delete(pendingPages.requests, token)
+	pendingPages.Unlock()
+	if !found {
+		return nil, fmt.Errorf("page generation token is invalid, expired or already used; reload the page")
+	}
+	original, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(page.raw)))
 	if err != nil {
 		return nil, err
 	}
@@ -87,10 +146,9 @@ addEventListener("load", () => setTimeout(async () => {
     }
   }
   try {
-    const bytes = Uint8Array.from(atob(REQUEST_DATA), c => c.charCodeAt(0));
     const response = await fetch(location.href, {
       method:"POST", credentials:"same-origin",
-      headers:{"X-Anything-Generate":"1", "Content-Type":"message/http"}, body:bytes
+      headers:{"X-Anything-Generate":GENERATION_TOKEN}
     });
     if (!response.ok) throw new Error(await response.text());
     const reader = response.body.getReader(), decoder = new TextDecoder();

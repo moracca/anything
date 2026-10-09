@@ -50,7 +50,8 @@ func (c *ollamaConfig) configure(cmd *exec.Cmd) {
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
 		key = strings.ToUpper(key) // Environment keys are case-insensitive on Windows.
-		if !strings.HasPrefix(key, "ANTHROPIC_") && !strings.HasPrefix(key, "CLAUDE_CODE_") &&
+		if !strings.HasPrefix(key, "ANTHROPIC_") &&
+			(!strings.HasPrefix(key, "CLAUDE_CODE_") || key == "CLAUDE_CODE_GIT_BASH_PATH") &&
 			key != "MAX_THINKING_TOKENS" && key != "DISABLE_TELEMETRY" &&
 			key != "DISABLE_ERROR_REPORTING" && key != "DISABLE_UPDATES" {
 			cmd.Env = append(cmd.Env, entry)

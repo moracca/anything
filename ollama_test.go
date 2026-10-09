@@ -14,6 +14,8 @@ import (
 )
 
 func TestOllamaStream(t *testing.T) {
+	originalTheme := currentTheme()
+	t.Cleanup(func() { setTheme(originalTheme) })
 	t.Setenv("ANTHROPIC_API_KEY", "operator-key")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "operator-token")
 	t.Setenv("ANTHROPIC_PROFILE", "operator-profile")
@@ -27,17 +29,19 @@ func TestOllamaStream(t *testing.T) {
 		event("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":23}}`) +
 		event("message_stop", `{"type":"message_stop"}`)
 	for _, tc := range []struct {
-		name, body string
-		status     int
-		wantErr    bool
+		name, body, theme string
+		status            int
+		wantErr           bool
 	}{
-		{"complete", start + text + finish, http.StatusOK, false},
-		{"incomplete", start + text, http.StatusOK, true},
-		{"malformed block", start + event("content_block_delta", `{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"bad"}}`), http.StatusOK, true},
-		{"stream error", event("error", `{"type":"error","error":{"type":"overloaded_error","message":"local stream failed"}}`), http.StatusOK, true},
-		{"HTTP error", `{"type":"error","error":{"type":"invalid_request_error","message":"local request failed"}}`, http.StatusBadRequest, true},
+		{"complete", start + text + finish, "", http.StatusOK, false},
+		{"theme", start + text + finish, "deep sea research station, 1970s", http.StatusOK, false},
+		{"incomplete", start + text, "", http.StatusOK, true},
+		{"malformed block", start + event("content_block_delta", `{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"bad"}}`), "", http.StatusOK, true},
+		{"stream error", event("error", `{"type":"error","error":{"type":"overloaded_error","message":"local stream failed"}}`), "", http.StatusOK, true},
+		{"HTTP error", `{"type":"error","error":{"type":"invalid_request_error","message":"local request failed"}}`, "", http.StatusBadRequest, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			setTheme(tc.theme)
 			type captured struct {
 				path, method string
 				headers      http.Header
@@ -99,7 +103,7 @@ func TestOllamaStream(t *testing.T) {
 			if len(params.Fallbacks) != 0 || len(params.OutputConfig) != 0 {
 				t.Error("local request contains Anthropic-specific fallback or effort settings")
 			}
-			if len(params.System) != 1 || params.System[0].Text != systemPrompt || len(params.Messages) != 1 ||
+			if len(params.System) != 1 || params.System[0].Text != sitePrompt(false) || len(params.Messages) != 1 ||
 				params.Messages[0].Role != "user" || len(params.Messages[0].Content) != 1 || params.Messages[0].Content[0].Text != "raw request" {
 				t.Error("local request changed the application's prompts")
 			}
@@ -140,6 +144,8 @@ func TestOllamaChildIsolation(t *testing.T) {
 	for key, value := range map[string]string{
 		"ANTHROPIC_API_KEY": "operator-key", "ANTHROPIC_AUTH_TOKEN": "operator-token",
 		"ANTHROPIC_PROFILE": "operator-profile", "CLAUDE_CODE_USE_BEDROCK": "1",
+		"CLAUDE_CODE_USE_VERTEX": "1", "CLAUDE_CODE_USE_FOUNDRY": "1",
+		"CLAUDE_CODE_OAUTH_TOKEN": "operator-oauth", "CLAUDE_CODE_GIT_BASH_PATH": `C:\portable-git\bin\bash.exe`,
 		"MAX_THINKING_TOKENS": "10000", "ANYTHING_TEST_SENTINEL": "preserved",
 	} {
 		t.Setenv(key, value)
@@ -158,13 +164,15 @@ func TestOllamaChildIsolation(t *testing.T) {
 	for key, want := range map[string]string{
 		"ANTHROPIC_API_KEY": "ollama", "ANTHROPIC_BASE_URL": config.baseURL,
 		"CLAUDE_CODE_MAX_CONTEXT_TOKENS":           "65536",
+		"CLAUDE_CODE_GIT_BASH_PATH":                `C:\portable-git\bin\bash.exe`,
 		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "ANYTHING_TEST_SENTINEL": "preserved",
 	} {
 		if env[key] != want {
 			t.Errorf("child %s = %q, want %q", key, env[key], want)
 		}
 	}
-	for _, key := range []string{"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_PROFILE", "CLAUDE_CODE_USE_BEDROCK", "MAX_THINKING_TOKENS"} {
+	for _, key := range []string{"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_PROFILE", "CLAUDE_CODE_USE_BEDROCK",
+		"CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_OAUTH_TOKEN", "MAX_THINKING_TOKENS"} {
 		if env[key] != "" {
 			t.Errorf("child retained inherited %s", key)
 		}
@@ -181,5 +189,25 @@ func TestOllamaChildIsolation(t *testing.T) {
 		"--tools", "", "--strict-mcp-config", "--setting-sources", "", "--no-session-persistence"}
 	if got := cliArgs("system", nil); !slices.Equal(got, wantClaude) {
 		t.Errorf("default Claude invocation changed: %q", got)
+	}
+}
+
+func TestOllamaChildIsolationCaseInsensitive(t *testing.T) {
+	const bashPath = `C:\portable-git\bin\bash.exe`
+	t.Setenv("Claude_Code_Git_Bash_Path", bashPath)
+	t.Setenv("Claude_Code_Use_Bedrock", "1")
+	config, err := newOllamaConfig("qwen3.8:27b", "", 65536)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("claude")
+	config.configure(cmd)
+	env := map[string]string{}
+	for _, entry := range cmd.Environ() {
+		key, value, _ := strings.Cut(entry, "=")
+		env[strings.ToUpper(key)] = value
+	}
+	if env["CLAUDE_CODE_GIT_BASH_PATH"] != bashPath || env["CLAUDE_CODE_USE_BEDROCK"] != "" {
+		t.Errorf("case-insensitive environment handling lost Git Bash or retained the provider override")
 	}
 }

@@ -66,8 +66,9 @@ example above needs substantial memory; `qwen3-coder` is another option.
 The server uses exactly the model name you supply. Local generation speed
 depends on the model and hardware.
 
-Leave the terminal running. It logs when generation starts, when HTML begins
-arriving, and progress every 10 seconds while a request is still running.
+Leave the terminal running. With Ollama, it also logs when generation starts,
+when HTML begins arriving, and progress every 10 seconds while a request is
+still running.
 Ollama's browser loading screen requires JavaScript; terminal clients still receive
 the raw HTML response.
 
@@ -90,6 +91,14 @@ the raw HTML response.
 | `PORT` | `8080` | Port to listen on. The server always binds to `127.0.0.1`. |
 | `ANTHROPIC_API_KEY` | unset | If set (and `-session` and `-ollama` are off), generate pages through the Anthropic API instead of the `claude` CLI. |
 | `OLLAMA_HOST` | `http://127.0.0.1:11434` | Ollama API base URL, as `host:port` or `http(s)://host:port`. |
+
+`-ollama-context` sets Claude Code's
+[`CLAUDE_CODE_MAX_CONTEXT_TOKENS`](https://code.claude.com/docs/en/model-config#correct-the-window-for-a-gateway-or-custom-model-id).
+For an unrecognized model ID with neither a `claude-` prefix nor a `[1m]`
+marker, Claude Code 2.1.193 or later uses this declared window while retaining
+automatic compaction. Other IDs have different rules described in the linked
+documentation. Ollama session generation and memory were tested with Claude
+Code 2.1.247. Compaction at the declared limit was not tested.
 
 Examples:
 
@@ -146,6 +155,12 @@ model builds around it.
 With Ollama, shared session memory and `-recycle` behave the same. Per-request
 calls disable thinking; sessions use low effort and may still reason before
 writing a page.
+
+For browser navigation with Ollama, the loading page receives an opaque,
+single-use token. Its fetch redeems that token to generate the page from the
+original HTTP request, whose snapshot stays on the server. The loader waits
+through the page's head and CSS, then streams the generated document into the
+same tab.
 
 The prompt ranks what the page is built from: the path and query first, then
 the method and body, the `Referer`, cookies, and lightly `Accept-Language` and
