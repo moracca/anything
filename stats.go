@@ -120,3 +120,10 @@ func (ri rateLimitInfo) plan() (string, bool) {
 	}
 	return "plan " + strings.Join(parts, " · "), warn
 }
+
+func plural(n int, word string) string {
+	if n == 1 {
+		return "1 " + word
+	}
+	return fmt.Sprintf("%d %ss", n, word)
+}

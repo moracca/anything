@@ -55,7 +55,11 @@ aren't signed. Clear it once with
 |---|---|---|
 | `-session` | off | Keep one long-running `claude` session instead of a fresh one per request. The model remembers every page it has served, to every visitor: each refresh is still new, but pages can refer to ones that no longer exist and notice returning visitors. Always uses the `claude` CLI, even if `ANTHROPIC_API_KEY` is set. |
 | `-recycle N` | `0` | With `-session`: restart the session after `N` pages, wiping the site's memory. `0` means never. |
-| `-seeds a,b,c` | built-in list | Comma-separated seed words. One is picked at random for each request and offered to the model as inspiration (it may ignore it). The chosen word is printed in the request log. |
+| `-theme "…"` | none | A theme for the whole site, e.g. `"deep sea research station, 1970s"`. Every page belongs to that world; the path and seed word bend it. |
+| `-seeds a,b,c` | built-in list | Comma-separated seed words. One is picked at random for each request and offered to the model as inspiration (it may ignore it). The chosen seed is printed in the request log. |
+| `-seed-file path` | none | Pick seeds from any text file instead: a word list, a novel, song lyrics, a manual. Every distinct word of four or more letters is a candidate, all equally likely. Can't be combined with `-seeds`. |
+| `-seed-mix a,b` | none | Pair one of these words with each pick from the pool (`-seeds`, `-seed-file`, or the built-in list), e.g. `neon + fungus`. A few words of yours give endless combinations. |
+| `-no-seeds` | off | Don't offer a seed at all; pages come from the request alone. Expect repeats: the same request tends to get the same idea (see below). Can't be combined with the other seed flags. |
 
 | Environment variable | Default | Description |
 |---|---|---|
@@ -68,7 +72,39 @@ Examples:
 PORT=3000 ./anything
 ./anything -session -recycle 20
 ./anything -seeds "neon,rain,vending machine,1987"
+./anything -seed-file moby-dick.txt
+./anything -seed-mix "neon,rain" -theme "deep sea research station, 1970s"
+./anything -no-seeds
 ```
+
+### Commands while it's running
+
+Type into the server's terminal and press Enter:
+
+| Command | Does |
+|---|---|
+| `r` | Reset the `-session`: the site forgets every page, and the next request starts a new one. Waits for a page being made, if any. |
+| `s` | Summary so far: pages, average timings, output tokens, cost, subscription usage, session memory, seeds and theme. |
+| `t` | Show the theme. |
+| `t <text>` | Change the theme from the next page on. In `-session` mode the site keeps its memory and is told its world has changed. |
+| `t off` | Remove the theme. |
+| `n <text>` | A note for the next page only, e.g. `n the station has begun to flood`. Several before the next page add up. In `-session` mode that page enters the site's memory, so the note's effect lives on: you narrate, the site remembers. |
+| `n` / `n off` | Show / cancel the pending note. |
+| `h` | List the commands. |
+
+Only whoever runs the server can use these; nothing on the website can trigger
+them.
+
+### Why seeds
+
+The model can't be random on its own. Current Claude models don't accept a
+temperature setting, so the same request tends to get the same idea: with
+`-no-seeds`, `/` comes back as the same imaginary place visit after visit,
+across restarts. Asking the model for "random" words doesn't help either — it
+offers its favourites (in testing, three runs of "give me 10 random words" all
+included *lantern*), and a number like "seed 48213" in the prompt changes
+nothing. So the randomness comes from the program: it picks the seed, and the
+model builds around it.
 
 ## How it works
 

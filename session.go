@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -22,7 +23,8 @@ type session struct {
 	cmd   *exec.Cmd
 	stdin io.WriteCloser
 	out   *bufio.Scanner
-	pages int
+	pages atomic.Int64 // pages in the current session's memory
+	theme string       // the theme this session last heard about
 
 	// The CLI reports cost and API time as running totals for the session;
 	// these hold the previous totals so each page can be logged on its own.
@@ -33,7 +35,8 @@ type session struct {
 }
 
 func (s *session) start() error {
-	cmd := exec.Command("claude", cliArgs(systemPrompt+sessionPrompt, "--input-format", "stream-json")...)
+	s.theme = currentTheme()
+	cmd := exec.Command("claude", cliArgs(sitePrompt(true), "--input-format", "stream-json")...)
 	cmd.Dir = os.TempDir()
 	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()
@@ -49,7 +52,8 @@ func (s *session) start() error {
 	}
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, 0, 1<<20), 16<<20)
-	s.cmd, s.stdin, s.out, s.pages = cmd, stdin, sc, 0
+	s.cmd, s.stdin, s.out = cmd, stdin, sc
+	s.pages.Store(0)
 	s.costSoFar, s.apiSoFar = 0, 0
 	log.Printf("session: started claude (pid %d); the site's memory begins now", cmd.Process.Pid)
 	return nil
@@ -72,14 +76,26 @@ func (s *session) generate(prompt string, emit func(string)) (genStats, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.cmd != nil && s.recycleAfter > 0 && s.pages >= s.recycleAfter {
-		log.Printf("session: %d pages served; forgetting everything", s.pages)
+	if s.cmd != nil && s.recycleAfter > 0 && s.pages.Load() >= int64(s.recycleAfter) {
+		log.Printf("session: %d pages served; forgetting everything", s.pages.Load())
 		s.stop()
 	}
 	if s.cmd == nil {
 		if err := s.start(); err != nil {
 			return stats, err
 		}
+	}
+
+	// A theme changed with the t command reaches a running session as a note
+	// on its next page, so the site keeps its memory while its world shifts.
+	if th := currentTheme(); th != s.theme {
+		note := "Note from whoever runs this server: the site no longer has a theme; pages are free of it from now on."
+		if th != "" {
+			note = "Note from whoever runs this server: the site's theme is now: " + th +
+				". From this page on, everything belongs to the new theme; what came before can echo, but the world has changed."
+		}
+		prompt = note + "\n\n" + prompt
+		s.theme = th
 	}
 
 	msg, _ := json.Marshal(map[string]any{
@@ -97,7 +113,7 @@ func (s *session) generate(prompt string, emit func(string)) (genStats, error) {
 			continue
 		}
 		if l.apply(&stats, emit) {
-			s.pages++
+			s.pages.Add(1)
 			stats.CostUSD -= s.costSoFar
 			stats.APITime -= s.apiSoFar
 			s.costSoFar, s.apiSoFar = l.TotalCostUSD, time.Duration(l.DurationAPIMs)*time.Millisecond
@@ -116,3 +132,17 @@ func (s *session) generate(prompt string, emit func(string)) (genStats, error) {
 	s.stop()
 	return stats, fmt.Errorf("session: claude exited mid-turn (%v); memory lost, will restart", err)
 }
+
+// reset ends the session, waiting for any page being made. The next request
+// starts a new one with no memory. It returns how many pages were forgotten.
+func (s *session) reset() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := s.pages.Load()
+	s.stop()
+	s.pages.Store(0)
+	return n
+}
+
+// remembered is how many pages the current session holds in memory.
+func (s *session) remembered() int64 { return s.pages.Load() }

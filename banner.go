@@ -33,7 +33,7 @@ var taglines = []string{
 // 256-colour gradient, top row to bottom: magenta through violet to cyan.
 var gradient = []int{201, 165, 129, 93, 63, 51}
 
-func printBanner(addr, backend string) {
+func printBanner(addr string, rows [][2]string) {
 	color := useColor()
 	paint := func(code, s string) string {
 		if !color {
@@ -52,7 +52,9 @@ func printBanner(addr, backend string) {
 
 	row := func(k, v string) { b.WriteString("  " + paint("2", fmt.Sprintf("%-8s", k)) + v + "\n") }
 	row("url", paint("1;4;38;5;51", "http://"+addr+"/")+paint("2", "  ← try any path"))
-	row("backend", backend)
+	for _, r := range rows {
+		row(r[0], r[1])
+	}
 	b.WriteString("\n")
 	fmt.Fprint(os.Stderr, b.String())
 }
