@@ -27,7 +27,17 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 )
 
-const model = "claude-opus-5-5"
+const defaultAPIModel = "claude-opus-5-5"
+
+// claudeModel is -model: the Claude model for the API, CLI and session
+// backends. Empty keeps the defaults (claude-opus-5-5 on the API, opus on the CLI).
+var claudeModel string
+
+// fallbackModels accept the server-side refusal fallback; sending it to
+// others (Haiku 5.5, for one) is an error.
+var fallbackModels = map[string]bool{
+	"claude-opus-5-5": true, "claude-opus-5": true, "claude-sonnet-5-5": true, "claude-fable-5-1": true,
+}
 
 const systemPrompt = `You are a web server. You receive one raw HTTP request and you respond with the body of an HTML page for it.
 
@@ -89,6 +99,7 @@ func main() {
 	seedMix := flag.String("seed-mix", "", "comma-separated words; each request pairs one of these with a random word from the pool")
 	noSeeds := flag.Bool("no-seeds", false, "don't offer the model a seed word; pages come from the request alone")
 	flag.StringVar(&theme, "theme", "", `a theme for the whole site, e.g. "deep sea research station, 1970s"`)
+	flag.StringVar(&claudeModel, "model", "", "Claude model for the API, CLI and session backends, e.g. claude-haiku-5-5 or claude-sonnet-5-5 (default: claude-opus-5-5 on the API, opus on the CLI)")
 	ollamaModel := flag.String("ollama", "", "generate with this installed Ollama model instead of Claude")
 	omlxModel := flag.String("omlx", "", "generate with this oMLX model instead of Claude (Apple Silicon); host and key come from ~/.omlx/settings.json unless OMLX_HOST/OMLX_API_KEY are set")
 	localContext := flag.Int("local-context", 0, "with -ollama or -omlx and -session: context budget the claude CLI assumes, in tokens (default: 65536 for Ollama; oMLX's own max_context_window, else 32768)")
@@ -133,7 +144,10 @@ func main() {
 	// With an API key, call the API directly. Without one, shell out to
 	// `claude -p`, which runs on your Claude Code login (subscription).
 	var backend string
-	api := apiBackend{model: model}
+	api := apiBackend{model: defaultAPIModel}
+	if claudeModel != "" {
+		api.model = anthropic.Model(claudeModel)
+	}
 	if *localContext == 0 {
 		*localContext = *ollamaContext
 	}
@@ -142,6 +156,8 @@ func main() {
 	switch {
 	case *ollamaModel != "" && *omlxModel != "":
 		log.Fatal("-ollama and -omlx can't be used together")
+	case claudeModel != "" && (*ollamaModel != "" || *omlxModel != ""):
+		log.Fatal("-model picks a Claude model; with -ollama or -omlx, give the local model there instead")
 	case *ollamaModel != "":
 		ctxTokens := *localContext
 		if ctxTokens == 0 {
@@ -165,7 +181,7 @@ func main() {
 			log.Fatal("-session needs the `claude` CLI on PATH")
 		}
 		sess = &session{recycleAfter: *recycle, local: local}
-		backend = "claude session (remembers every page)"
+		backend = "claude session (" + cliModelName() + "; remembers every page)"
 		if local != nil {
 			backend = local.name + " session (" + local.model + " at " + local.baseURL + "; via claude CLI)"
 		}
@@ -173,7 +189,7 @@ func main() {
 			backend += fmt.Sprintf(", forgets after %d", *recycle)
 		}
 	} else if useAPI {
-		backend = "Anthropic API (" + model + ")"
+		backend = "Anthropic API (" + string(api.model) + ")"
 		if local != nil {
 			backend = local.name + " (" + local.model + " at " + local.baseURL + ")"
 		}
@@ -181,7 +197,7 @@ func main() {
 		if _, err := exec.LookPath("claude"); err != nil {
 			log.Fatal("no ANTHROPIC_API_KEY and no `claude` CLI on PATH")
 		}
-		backend = "claude CLI (your Claude Code login)"
+		backend = "claude CLI (" + cliModelName() + "; your Claude Code login)"
 	}
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -449,8 +465,10 @@ func generateAPI(ctx context.Context, api apiBackend, prompt string, emit func(s
 	} else {
 		params.OutputConfig = anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffortLow}
 		// Route safety-classifier refusals to a fallback model instead of failing.
-		opts = append(opts, option.WithHeaderAdd("anthropic-beta", "server-side-fallback-2026-07-01"),
-			option.WithJSONSet("fallbacks", "default"))
+		if fallbackModels[string(api.model)] {
+			opts = append(opts, option.WithHeaderAdd("anthropic-beta", "server-side-fallback-2026-07-01"),
+				option.WithJSONSet("fallbacks", "default"))
+		}
 	}
 	stream := api.client.Messages.NewStreaming(ctx, params, opts...)
 	defer stream.Close()
@@ -551,10 +569,18 @@ func (l *cliLine) apply(s *genStats, emit func(string)) bool {
 	return false
 }
 
+// cliModelName is the --model given to the claude CLI.
+func cliModelName() string {
+	if claudeModel != "" {
+		return claudeModel
+	}
+	return "opus"
+}
+
 // cliArgs runs claude headless with no tools, MCP servers or settings, so
 // all it can do is write the page.
 func cliArgs(system string, local *localConfig, extra ...string) []string {
-	cliModel := "opus"
+	cliModel := cliModelName()
 	if local != nil {
 		cliModel = local.model
 		extra = append(extra, "--bare")

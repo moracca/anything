@@ -82,6 +82,7 @@ the raw HTML response.
 
 | Flag | Default | Description |
 |---|---|---|
+| `-model MODEL` | `claude-opus-5-5` (API), `opus` (CLI) | Claude model for the API, CLI and `-session` backends, e.g. `claude-haiku-5-5` — about twice as fast and far cheaper, if plainer. Not used with `-ollama`/`-omlx`, which take the local model name themselves. |
 | `-ollama MODEL` | unset | Use this installed local Ollama model. With `-session`, Claude Code runs against Ollama in `--bare` mode. |
 | `-omlx MODEL` | unset | Use this oMLX model (Apple Silicon). Model names are the folder names oMLX lists at `/v1/models`. With `-session`, Claude Code runs against oMLX in `--bare` mode. |
 | `-local-context N` | auto | With `-ollama` or `-omlx` and `-session`: the context budget Claude Code assumes. Defaults to 65536 for Ollama, and to oMLX's own `max_context_window` (else 32768) for oMLX. Keep it within what the server allows. |
@@ -121,6 +122,7 @@ PORT=3000 ./anything
 ./anything -no-seeds
 ./anything -ollama qwen3.8:27b-mlx-bf16 -session -recycle 20
 ./anything -omlx gpt-oss-120b-4bit
+./anything -model claude-haiku-5-5
 ```
 
 ### Commands while it's running

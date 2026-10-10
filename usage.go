@@ -14,7 +14,7 @@ var usageGroups = []struct {
 	flags [][2]string // flag name, value placeholder
 }{
 	{"Mode", [][2]string{{"session", ""}, {"recycle", "N"}}},
-	{"Backend", [][2]string{{"ollama", "MODEL"}, {"omlx", "MODEL"}, {"local-context", "N"}, {"ollama-context", "N"}}},
+	{"Backend", [][2]string{{"model", "MODEL"}, {"ollama", "MODEL"}, {"omlx", "MODEL"}, {"local-context", "N"}, {"ollama-context", "N"}}},
 	{"Site", [][2]string{{"theme", "TEXT"}}},
 	{"Seeds", [][2]string{{"seeds", "a,b,c"}, {"seed-file", "PATH"}, {"seed-mix", "a,b"}, {"no-seeds", ""}}},
 }

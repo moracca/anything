@@ -24,7 +24,11 @@ type genStats struct {
 // Per-million-token API prices, for working out cost when the API doesn't
 // report it (the claude CLI reports its own).
 var prices = map[string]struct{ in, out, cacheRead, cacheWrite float64 }{
-	"claude-opus-5-5": {4.00, 20.00, 0.20, 5.00},
+	"claude-opus-5-5":   {4.00, 20.00, 0.20, 5.00},
+	"claude-sonnet-5-5": {2.00, 10.00, 0.20, 2.50},
+	// Haiku 5.5's input/output prices are for prompts up to 100K tokens (pages are
+	// far smaller); its cache prices are assumed at the usual 0.1x / 1.25x of input.
+	"claude-haiku-5-5": {0.10, 0.50, 0.01, 0.125},
 }
 
 func apiCost(s genStats) float64 {
