@@ -69,11 +69,13 @@ ID your server lists, and choose a model that fits your hardware.
 precedence over Anthropic credentials. Without either flag, ordinary requests
 use the Anthropic API when `ANTHROPIC_API_KEY` is set, otherwise the Claude CLI.
 `-session` always uses the Claude CLI; see [sessions](#sessions) for credentials
-and local context settings.
+and local context settings. `-model` selects a Claude model and cannot be
+combined with `-ollama` or `-omlx`; those flags take the local model themselves.
 
 ### Claude Code or Anthropic API
 
-The Claude CLI uses your configured credentials and the `opus` model alias.
+The Claude CLI uses your configured credentials and defaults to the `opus`
+model alias.
 To call the Anthropic API directly instead:
 
 ```bash
@@ -81,8 +83,17 @@ export ANTHROPIC_API_KEY="your-api-key"
 ./anything
 ```
 
-Direct API requests use `claude-opus-5-5` and are billed to that key. Neither
-of these paths needs a local model server.
+Direct API requests default to `claude-opus-5-5` and are billed to that key.
+Use `-model` to choose a different Claude model for API requests, CLI requests
+or Claude sessions:
+
+```bash
+./anything -model claude-haiku-5-5
+./anything -session -model claude-sonnet-5-5
+```
+
+The supplied model name is passed through unchanged. Neither of these
+backends needs a local model server.
 
 ### Ollama
 
@@ -249,6 +260,7 @@ Run `./anything -h` for grouped command-line help.
 
 | Flag | Default | Meaning |
 |---|---|---|
+| `-model MODEL` | `claude-opus-5-5` (API), `opus` (CLI) | Select the Claude model, including for Claude sessions. Cannot be combined with `-ollama` or `-omlx`. |
 | `-ollama MODEL` | unset | Generate with this installed Ollama model. |
 | `-omlx MODEL` | unset | Generate with this oMLX or compatible server model. |
 | `-session` | off | Keep one shared conversation through the Claude CLI. |
