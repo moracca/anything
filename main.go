@@ -387,7 +387,12 @@ func serve(ctx context.Context, api apiBackend, w http.ResponseWriter, r *http.R
 	if internal {
 		w.Header().Set("Content-Type", "application/x-ndjson")
 	}
-	w.Header().Set("Cache-Control", "no-store") // the back button gets a new page too
+	// no-cache, not no-store: back and forward show the page as it was, while a
+	// reload or a fresh visit revalidates and, with no validators, gets a new page.
+	w.Header().Set("Cache-Control", "private, no-cache")
+	if internal {
+		w.Header().Set("Cache-Control", "no-store")
+	}
 	flusher, _ := w.(http.Flusher)
 
 	// Hold output until the first '<' so any stray preamble or ``` fence is dropped.

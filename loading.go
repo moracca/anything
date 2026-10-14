@@ -75,8 +75,10 @@ func loadingPage(w http.ResponseWriter, r *http.Request) {
 	}
 	encoded, _ := json.Marshal(token)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	io.WriteString(w, strings.Replace(loadingHTML, "GENERATION_TOKEN", string(encoded), 1))
+	// Cacheable like a page, so back and forward bring back this token and the
+	// loader restores the page it saved under it.
+	w.Header().Set("Cache-Control", "private, no-cache")
+	io.WriteString(w, strings.ReplaceAll(loadingHTML, "GENERATION_TOKEN", string(encoded)))
 }
 
 func originalRequest(r *http.Request) (*http.Request, error) {
@@ -121,6 +123,13 @@ main{text-align:center;padding:2rem;max-width:40rem}p{color:#666;font-size:14px;
 <noscript>This loading screen requires JavaScript.</noscript>
 </main><script>
 addEventListener("load", () => setTimeout(async () => {
+  // Back or forward to a page already generated in this tab: show it again.
+  const saved = "anything:"+GENERATION_TOKEN;
+  try {
+    const html = sessionStorage.getItem(saved);
+    if (html !== null) { document.open(); document.write(html); document.close(); return; }
+  } catch {}
+  let whole = "";
   const message = document.getElementById("message"), detail = document.getElementById("detail");
   const began = Date.now();
   let received = 0, writing = false, pending = "", inspected = 0;
@@ -128,6 +137,7 @@ addEventListener("load", () => setTimeout(async () => {
     detail.textContent = Math.floor((Date.now()-began)/1000)+"s elapsed"+(received ? " · HTML is arriving" : "");
   }, 1000);
   function append(text, finished = false) {
+    whole += text;
     if (writing) { document.write(text); return; }
     pending += text;
     if (!finished && Date.now()-inspected < 200) return;
@@ -175,6 +185,7 @@ addEventListener("load", () => setTimeout(async () => {
     if (!complete || records.trim()) throw new Error("The HTML stream ended unexpectedly.");
     append("", true);
     document.close();
+    try { sessionStorage.setItem(saved, whole); } catch {}
   } catch (error) {
     if (writing) {
       document.close();

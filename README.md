@@ -296,7 +296,10 @@ Request bodies are limited to **64 KiB**; larger bodies are rejected.
 The prompt asks for a complete HTML document with inline CSS and visuals.
 Links and forms lead to another generated page; they don't create database
 records or a persistent application. The server strips any output before the
-first `<` and sends `Cache-Control: no-store`.
+first `<` and sends `Cache-Control: private, no-cache`: the back and forward
+buttons show the page you saw, while reloading or visiting a URL again always
+invents a new one. (With a local backend, the loading screen keeps each finished
+page in the tab's `sessionStorage` so it can do the same.)
 
 For **all local backends**, browser navigation immediately shows a loading
 screen with elapsed time. It stays visible through the generated head and
